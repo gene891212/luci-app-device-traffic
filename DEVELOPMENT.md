@@ -1,246 +1,75 @@
-# Development
+# Development and recovery
 
-Notes for working on luci-app-nlbw-history. See [README.md](README.md) for
-installing and configuring it.
+## Source layout
 
-## Repository layout
+The OpenWrt package lives in `package/luci-app-device-traffic`. Its installed files are explicit in the package Makefile. `build-apk.sh` reads package metadata and scripts through `tools/pkg-meta.sh`; its staged payload must match the Makefile's install list.
 
-    package/luci-app-nlbw-history/   the OpenWrt package
-    build-ipk.sh                     builds the .ipk without an SDK (24.10 and older)
-    build-apk.sh                     builds the .apk without an SDK (25.12 and newer)
-    tools/pkg-meta.sh                what both builders read out of the package Makefile
-    install.sh                       installs straight onto a running router
-    README.md                        the user-facing document
-    CLAUDE.md                        constraints that aren't visible in the code
+| Component | Installed location |
+| --- | --- |
+| UCI configuration | `/etc/config/traffic-monitor` |
+| Historical service | `/etc/init.d/traffic-monitor` |
+| Collector, query, live and migration commands | `/usr/bin/traffic-monitor-*` |
+| RPC object | `luci_traffic_monitor` |
+| RPC source | `/usr/share/rpcd/ucode/luci.traffic_monitor.uc` |
+| LuCI entry | `/cgi-bin/luci/admin/services/device-traffic` |
+| Persistent history | Configured `data_dir`, default `/srv/traffic-monitor` |
+| Volatile sampler state | `/tmp/traffic-monitor` |
 
-Read `CLAUDE.md` before changing anything: it records the busybox, ubus and
-LuCI constraints that the code is shaped around.
+The older Traffic Monitor and local-custom URLs remain hidden aliases. The `traffic-monitor` runtime/configuration/data and browser-storage namespaces are retained across the package rename. Legacy local-custom browser keys are read as a one-time fallback.
 
-## Building
+## Local checks
 
-    ./build-ipk.sh    OpenWrt 24.10 and older, -> luci-app-nlbw-history_<version>-<release>_all.ipk
-    ./build-apk.sh    OpenWrt 25.12 and newer, -> luci-app-nlbw-history-<version>-r<release>.apk
+```sh
+node tools/check-source.cjs
+node tools/test.cjs
+sh build-apk.sh
+```
 
-**`build-apk.sh` needs docker**, unless you have apk-tools 3 on the machine,
-which almost nobody does. It runs one `docker run --rm` against `alpine:edge`,
-pulling that image the first time: 8 MB, and the only thing either builder
-leaves on the machine. `docker rmi alpine:edge` takes it back. `build-ipk.sh`
-needs nothing but `tar`.
+The standalone build uses apk-tools 3 or Docker. Its Alpine image is pinned by digest. `tools/write-makefile.cjs` regenerates the explicit install list after installed files are added or renamed; commit the resulting Makefile with the change.
 
-No OpenWrt SDK needed for either. The package is shell, ucode and JavaScript
-only, so `PKGARCH:=all` and nothing is cross compiled. Both read the version,
-the metadata, the dependencies, the conffiles and all three maintainer scripts
-out of `package/luci-app-nlbw-history/Makefile` through `tools/pkg-meta.sh`, so
-there is one copy of each and the two builders cannot drift apart.
+For an SDK build, copy `package/luci-app-device-traffic` into the SDK's `package` directory, select the package under LuCI → Applications, and run:
 
-The `.ipk` is an ar archive of tarballs and `tar` is all it takes. The `.apk`
-is not: it is a signed ADB container, and the only thing that writes one is
-`apk mkpkg` from apk-tools 3. Note that this is **not** the `apk` on the
-router, which OpenWrt builds with `-Dminimal=true` and which has no `mkpkg`.
-`build-apk.sh` uses apk-tools from the host when it finds one, and otherwise
-runs `apk mkpkg` in an `alpine:edge` container. So either install apk-tools 3
-or have docker; the script stops and says so when it finds neither.
+```sh
+make package/luci-app-device-traffic/compile V=s
+```
 
-The container runs as root and chowns the staged tree, then hands it back to
-the calling user before it exits. Without that last part the temporary
-directory stays root-owned and the cleanup on the way out cannot remove it.
-apk records the owner of every file, so the staged tree has to be root's;
-running as root or having `fakeroot` covers that on the host.
+An APK built without a signing key is unsigned. Publishing a release APK does not register a signed feed or configure automatic router upgrades.
 
-What the `.apk` contains follows `include/package-pack.mk` from the OpenWrt
-tree, which is what the SDK would run. Two parts of it are easy to miss:
+## On-router verification
 
-- the file list and the conffile checksums under `/lib/apk/packages` are part
-  of the package payload rather than its metadata, and the list is generated
-  before the conffile bookkeeping so that it does not describe itself;
-- the maintainer scripts are not shipped as written. apk splits what opkg kept
-  in one script, so `postinst` is wrapped into both `post-install` and
-  `post-upgrade`, and `prerm` becomes `pre-deinstall`, which apk runs **only**
-  on a real removal. That is why `prerm` can ask opkg whether this is an
-  upgrade and still be right under apk: the token `upgrade` is never passed
-  there, so the `disable` it guards runs exactly when the package is removed.
-  An apk upgrade runs `post-upgrade` alone, so the `stop` in `postinst` is what
-  replaces the running service there.
+Check the service, data access and the RPC object separately:
 
-## Both pages draw with one chart module
+```sh
+/etc/init.d/traffic-monitor running
+traffic-monitor-collect --status
+traffic-monitor-live --status
+ubus -v list luci_traffic_monitor
+```
 
-`www/luci-static/resources/nlbw-history/chart.js` holds the palette, the number
-and time formatting, the stacked bar chart and the legend. The history page and
-the live page both pull it in with `'require nlbw-history.chart as chart'`, so
-the two charts cannot quietly stop matching each other. The history page keeps
-local wrappers with the old names, so the rest of that file reads as before.
+In LuCI verify Live rates keep changing, MB/s and 24-hour time labels, chart heights, fixed table widths, 24h Usage sorting, History filters and Settings. Opening a page is not equivalent to testing settings persistence, a service restart or a full router reboot.
 
-Only the axis differs: the history page charts bytes per bucket, the live page
-charts a rate, since bytes per three seconds is not a number anyone reads.
-Both state the bar width in the top right corner.
+The first release retains historical protocol aggregation at 900 seconds. Per-device history is sampled every 60 seconds. The Live 24h Usage column reads this stored history in the background rather than integrating the approximate Live graph.
 
-`tools/preview.py` evaluates the module and injects it the way LuCI's loader
-would, so a change to either file is still checked by `--screenshots`.
+## Migration backup
 
-## The live view is a separate path
+`traffic-monitor-migrate --apply` creates a private `/root/traffic-monitor-migration-*` directory containing the old configuration, installed files, flushed historical data, counter baselines and history checksums. `/etc/traffic-monitor.migration` records its path and makes a completed migration idempotent.
 
-The Live tab does not go through nlbwmon at all. `nlbw-history-live` polls
-conntrack, decides which end of each flow is local, diffs per flow against a
-snapshot in `/tmp` and appends per device totals to a ring buffer there. The
-neighbour table only turns the local address into a MAC, and stands in as the
-local/remote test when nlbwmon's subnet list cannot be resolved.
+Never publish that directory, a runtime snapshot or a real configuration export. The migration is for the former local-custom package only; the original upstream service remains independent.
 
-The ring carries a protocol dimension (`ts mac proto:port rx tx`) so that
-selecting a device can restack by protocol without a second pass over
-conntrack. Both pages say protocol, and both take the name from the same
-place, so the two cannot end up calling one thing by two names. Ports are
-named at emit time, never in the sampler, so the busy loop never reads a name
-file and the names follow whatever is installed.
-`/usr/share/nlbwmon/protocols` is consulted first so both pages agree, then
-`/etc/services` for the ports it does not carry, then the raw `tcp:443`.
+If migration exits before completion, it attempts to stop the new service and restart the old sampler. It retains its backup and any copied data for inspection. A failed migration must be inspected before another apply attempt; it will not overwrite a nonempty target directory.
 
-Which end of a flow is local comes from nlbwmon's `local_network` list, read
-out of its UCI config and resolved the way its init script does, so both pages
-count the same traffic: exactly one end inside, or the flow is skipped. The
-matching is done in awk without bit operators, so IPv4 divides by the host
-count instead of masking and IPv6 is compared as its 32 expanded hex digits,
-with a nibble comparison for a prefix length that is not a multiple of four.
+## Rollback after a successful migration
 
-The sampler is started by a poll rather than by procd, and exits on its own
-once polling stops, so nothing samples when nobody is watching. The ring is
-server side on purpose: if each browser tab diffed against its own snapshot,
-two open tabs would each consume part of the delta and both would draw about
-half the real traffic.
+Keep the previous local-custom APK available before removing the old package. This is a namespace/data-location migration; the historical TSV format is unchanged.
 
-Off a router it is testable the same way everything else is. Point the dump at
-a file of synthetic conntrack lines and the neighbour lookup at a fixture, then
-run the real script; `tools/` has no harness for it yet, but the parser takes
-both `conntrack -L` and `/proc/net/nf_conntrack` formats, which differ only in
-the leading fields.
+1. Close the new and old Live/History pages so they stop polling.
+2. Stop/disable `traffic-monitor` and run `traffic-monitor-live --stop`. Stopping the historical service flushes its RAM buffer.
+3. Reinstall the previous `luci-app-nlbw-history-custom` APK with scripts disabled, if it was removed.
+4. Restore the backed-up old configuration. Before starting the old sampler, copy the **latest** new historical files and the latest counter-baseline files (`state`, `state.proto`, `lastsample`, `lastflush`, and any remaining spool files) back to the old locations. This preserves samples recorded after migration and avoids counting the same delta twice. For a custom shared data directory, retain the shared history and transfer the current baseline only.
+5. Enable/start the old sampler, remove the new package with scripts disabled, then reload rpcd and refresh LuCI.
 
-## Why the live chart is shaped the way it is
+Preserve both data directories and the migration backup until the rollback is verified. Do not roll back by swapping an APK while leaving mismatched sampler state.
 
-**nlbwmon is too coarse to drive it.** It folds ongoing connections into its
-counters on its own `refresh_interval`, 30 seconds by default, so a per-second
-graph built on it would be twenty-nine empty bars and one spike. conntrack is
-much fresher, which is the whole reason the Live tab exists.
+## Release checklist
 
-**But conntrack is not smooth either.** The flowtable garbage collector runs
-every second and asks the driver for an offloaded flow's counters once that
-flow has aged past a tenth of
-`net.netfilter.nf_conntrack_tcp_timeout_offload`, 30 seconds by default. So
-offloaded traffic lands in roughly three second steps, per flow and on each
-flow's own phase. That is the real floor on resolution, not the poll rate, and
-it is confirmed on MT7988, whose `mtk_soc_data` sets `has_accounting`.
-
-**Reading a stepped signal at roughly the step period aliases**: an empty bar,
-then a double one, over and over. There is nothing to synchronise to.
-`nf_ct_acct_add()` is two atomic adds, there is no conntrack event for a
-counter update (the `ip_conntrack_events` enum has none), and the flows are
-phased independently anyway. So each reading is instead spread across the span
-it accumulated in, meaning back to the previous non-zero reading for that same
-key. Totals stay exact. The spread is capped at ten seconds, because an active
-flow reports every few seconds, so a key silent for longer was genuinely idle
-and its resumption should not be painted back over the quiet.
-
-**The bars sit on absolute clock boundaries**, not measured back from whenever
-the page last polled. Measured back, the grid shifts a fraction of a bar on
-every poll, every sample rebuckets, bars deep in the past change for no reason,
-and two browsers polling a moment apart draw different charts from identical
-data. On a fixed grid the boundaries are the same everywhere and the grid only
-ever advances a whole bar.
-
-The residue is that the newest few bars keep moving for about ten seconds
-while late readings arrive. A wider bar removes even that: at ten seconds or
-more each bar contains several writebacks and needs no spreading.
-
-## Testing a change on a router
-
-`install.sh` copies the files in place without going through a package manager
-at all, which is the fastest edit-and-try loop and works the same on every
-release:
-
-    scp -r . root@192.168.1.1:/tmp/luci-app-nlbw-history-src
-    ssh root@192.168.1.1 'sh /tmp/luci-app-nlbw-history-src/install.sh'
-
-There is no test suite. Off-router, what can be checked is shell and JS syntax
-(`sh -n`, `node --check`, which is what CI runs), the collector against a
-stubbed `nlbw`, and `nlbw-history-query` against synthetic day files.
-`CLAUDE.md` describes both setups.
-
-## Running the view without a router
-
-    python3 tools/preview.py
-
-That puts the LuCI page on `http://127.0.0.1:8099` and is the fastest way to
-work on `history.js`. It writes synthetic history in the format the sampler
-stores, and answers the page's rpc calls by running the real
-`nlbw-history-query` against it, so the device, protocol and period filters
-behave as they do on a router. Nothing about the page is reimplemented: the
-view file runs as-is behind stubs shaped like LuCI's `E`, `rpc`, `uci`, `view`
-and `poll`.
-
-`--days N` decides how much history there is to look at, `--port N` moves it,
-`--time-format` and `--date-format` say what the page is told those settings
-are, and `?device=&protocol=&period=` on the URL preselects a state worth
-returning to. The page reports what it drew, and anything it throws, to the
-terminal, which saves opening devtools.
-
-The README images come from the same script:
-
-    python3 tools/preview.py --screenshots
-
-which writes `docs/*.png` through headless Firefox instead of serving. An image
-that stops matching the code means the code moved.
-
-Needs `python3-pil`, and `firefox` for `--screenshots`; it uses `busybox` for
-awk and date when installed. Every window ends at the current time, so each run
-shifts the clock labels: regenerate the images when the page changed, not out
-of habit.
-
-## Continuous integration
-
-`.github/workflows/build.yml` has two jobs:
-
-- **check** runs on every push and pull request: `sh -n` on the shell scripts,
-  `node --check` on the LuCI views, and a JSON parse of the ACL and menu files.
-- **package** builds the `.ipk` and the `.apk`. It does *not* run on ordinary
-  pushes. It runs
-  only when the workflow is started by hand (Actions → build → Run workflow),
-  where the `.ipk` is a run artifact kept for 3 days, and when a GitHub release
-  is published, where the `.ipk` is uploaded to that release.
-
-Pushing a tag on its own builds nothing, and a release left as a draft
-publishes nothing: the upload happens at the moment the release is published.
-
-## Release procedure
-
-1. Bump `PKG_VERSION` in `package/luci-app-nlbw-history/Makefile` and reset
-   `PKG_RELEASE` to `1`. Bump `PKG_RELEASE` alone when only the packaging
-   changed and no installed file did.
-2. Update the README: the version in the title and the filename in the install
-   commands.
-3. Sanity check both builds with `./build-ipk.sh` and `./build-apk.sh`.
-4. Commit and push to `main`.
-5. On GitHub, Releases → Draft a new release. Set the tag to `v<PKG_VERSION>`
-   (`v1.2.3` for `PKG_VERSION:=1.2.3`) targeting that commit, write the notes
-   describing what changed, and publish. The release notes are the changelog;
-   the repository does not keep one.
-6. Publishing triggers the workflow, which builds the `.ipk` and the `.apk`
-   and attaches both. Check the run finished and both assets are on the
-   release page.
-7. The same run asks [the signed feed](https://github.com/EliotFerragni/openwrt-feed)
-   to rebuild, so routers subscribed to it see the new version. That step needs
-   the `FEED_DISPATCH_TOKEN` secret; without it the run only prints a warning
-   and the feed keeps serving the previous release until its `publish` workflow
-   is run by hand.
-
-The tag is created by GitHub when the release is published, so there is no
-need to tag by hand beforehand.
-
-Mark a release as a **pre-release** and the feed will skip it: `build-feed.sh`
-reads `releases/latest`, which ignores drafts and pre-releases.
-
-## Built with Claude Code
-
-This package was written by [Claude Code](https://claude.com/claude-code)
-across a series of sessions: the samplers, the ucode backend, the LuCI views,
-the build scripts, the preview harness, the CI workflow and the documentation.
-What to build, which trade-offs to take and what counted as broken came from
-the human side, as did every run on real hardware. Every commit  written by Claude
-carries a `Co-Authored-By: Claude` trailer, so the history says which is which.
+Run source checks/tests and build the APK. Validate the target router migration and UI, then create a release tag such as `device-traffic-v1.0.0`. Attach the APK and a `SHA256SUMS` file. Public release material must not include hostnames, client MAC/IP lists, runtime data, local paths or private backup archives.

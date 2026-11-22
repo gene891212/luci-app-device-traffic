@@ -1,4 +1,5 @@
 #!/bin/sh
+# Modified for Device Traffic from luci-app-nlbw-history; see NOTICE.
 # Sourced by build-ipk.sh and build-apk.sh. Everything either of them needs to
 # know about the package is read back out of the package Makefile rather than
 # written down a second time, because a second copy is how the two silently
@@ -8,7 +9,7 @@
 # Sourced, not run. $0 is still the build script, so PKG_ROOT resolves relative
 # to it and both builders can live at the top of the tree.
 
-PKG=luci-app-nlbw-history
+PKG=luci-app-device-traffic
 # The top of the tree. $0 is the build script when this is sourced by one;
 # anything else that sources it from elsewhere sets this instead.
 PKG_ROOT=${PKG_ROOT:-$(cd "$(dirname "$0")" && pwd)}
@@ -31,7 +32,10 @@ mkdefine() {
 
 # +luci-base +nlbwmon ... -> luci-base nlbwmon ...
 mkdepends() {
-	mkvar DEPENDS | sed -e 's/+//g' -e 's/[[:space:]][[:space:]]*/ /g'
+	_depends=$(mkvar DEPENDS | sed -e 's/+//g' -e 's/[[:space:]][[:space:]]*/ /g')
+	printf '%s' "$_depends"
+	for _conflict in $(mkvar CONFLICTS); do printf ' !%s' "$_conflict"; done
+	printf '\n'
 }
 
 # The installed tree, staged into $1 with every mode set rather than copied.

@@ -1,0 +1,43 @@
+#!/bin/sh
+# Modified for Device Traffic from luci-app-nlbw-history; see NOTICE.
+# Sampling loop. Re-reads the interval from /etc/config/traffic-monitor every
+# cycle, so a config change takes effect after at most one period.
+
+. /lib/functions.sh
+
+# procd signals this script, not the children it happens to be waiting on, so
+# the sleep below has to be taken down explicitly. Left alone it is reparented
+# and lingers for the rest of the interval, which is a stray process after every
+# stop, restart and package upgrade, and up to an hour of one at a high period.
+SLEEP_PID=
+
+flush_and_exit() {
+	[ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null
+	/usr/bin/traffic-monitor-collect --flush >/dev/null 2>&1
+	exit 0
+}
+trap flush_and_exit INT TERM
+
+logger -t traffic-monitor "sampler started"
+
+while :; do
+	/usr/bin/traffic-monitor-collect
+
+	config_load traffic-monitor 2>/dev/null
+	config_get PERIOD main period 60
+	case "$PERIOD" in
+		''|*[!0-9]*) PERIOD=60 ;;
+	esac
+	[ "$PERIOD" -lt 5 ] && PERIOD=5
+
+	# Sleep to the next multiple of the period rather than for a whole period,
+	# because the sample itself takes time: left to drift, the samples slide
+	# out of the graph's buckets and leave one of them empty every so often.
+	_sleep=$((PERIOD - $(date +%s) % PERIOD))
+	[ "$_sleep" -lt 2 ] && _sleep=$((_sleep + PERIOD))
+
+	sleep "$_sleep" &
+	SLEEP_PID=$!
+	wait "$SLEEP_PID"
+	SLEEP_PID=
+done

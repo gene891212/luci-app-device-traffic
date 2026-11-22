@@ -1,9 +1,10 @@
 #!/bin/sh
+# Modified for Device Traffic from luci-app-nlbw-history; see NOTICE.
 # Build the .apk for OpenWrt 25.12 and newer, which replaced opkg with apk.
 # Same package, same files, different container format. Run from the directory
 # holding this script.
 #
-#   ./build-apk.sh  ->  luci-app-nlbw-history-<version>-r<release>.apk
+#   ./build-apk.sh  ->  luci-app-device-traffic-<version>-r<release>.apk
 #
 # Version, metadata, dependencies, conffiles and the three maintainer scripts
 # all come out of the package Makefile, through tools/pkg-meta.sh, exactly as
@@ -120,7 +121,7 @@ set -- \
 
 # apk records the owner of every file, so the tree has to be root's. Whichever
 # way that is arranged, nothing here needs to run as root itself.
-if command -v apk >/dev/null 2>&1 && apk mkpkg --help >/dev/null 2>&1; then
+if command -v apk >/dev/null 2>&1 && apk --version 2>/dev/null | grep -q '^apk-tools 3\.'; then
 	if [ "$(id -u)" = 0 ]; then
 		apk mkpkg "$@"
 	elif command -v fakeroot >/dev/null 2>&1; then
@@ -131,10 +132,10 @@ if command -v apk >/dev/null 2>&1 && apk mkpkg --help >/dev/null 2>&1; then
 		exit 1
 	fi
 elif command -v docker >/dev/null 2>&1; then
-	echo "no apk-tools 3 here, borrowing one from alpine:edge"
+	echo "no apk-tools 3 here, borrowing one from alpine@sha256:020dfcbaaf4cc1078bf2d9c7ba31a8466e334061dcd2f248001d68f79e52c000"
 	# Handed back afterwards, or the temporary tree stays root's and the
 	# cleanup on the way out cannot remove it.
-	docker run --rm -u 0:0 -v "$WORK:$WORK" -w "$WORK" alpine:edge \
+	docker run --rm -u 0:0 -v "$WORK:$WORK" -w "$WORK" alpine@sha256:020dfcbaaf4cc1078bf2d9c7ba31a8466e334061dcd2f248001d68f79e52c000 \
 		sh -c "chown -R 0:0 '$ROOT' && apk mkpkg $(
 			for a; do printf " '%s'" "$a"; done
 		); _s=\$?; chown -R $(id -u):$(id -g) '$WORK'; exit \$_s"

@@ -1,0 +1,142 @@
+{
+  "admin/services/device-traffic": {
+    "title": "Device Traffic",
+    "order": 71,
+    "action": {
+      "type": "firstchild"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-device-traffic"
+      ]
+    },
+    "description": "Modified for Device Traffic from luci-app-nlbw-history; see NOTICE."
+  },
+  "admin/services/device-traffic/live": {
+    "title": "Live",
+    "order": 1,
+    "action": {
+      "type": "view",
+      "path": "traffic-monitor/live"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-device-traffic"
+      ]
+    }
+  },
+  "admin/services/device-traffic/history": {
+    "title": "History",
+    "order": 2,
+    "action": {
+      "type": "view",
+      "path": "traffic-monitor/history"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-device-traffic"
+      ]
+    }
+  },
+  "admin/services/device-traffic/settings": {
+    "title": "Settings",
+    "order": 3,
+    "action": {
+      "type": "view",
+      "path": "traffic-monitor/settings"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-device-traffic"
+      ]
+    }
+  },
+  "admin/services/nlbw-history-custom": {
+    "action": {
+      "type": "alias",
+      "path": "admin/services/device-traffic"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-device-traffic"
+      ]
+    }
+  },
+  "admin/services/nlbw-history-custom/live": {
+    "action": {
+      "type": "alias",
+      "path": "admin/services/device-traffic/live"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-device-traffic"
+      ]
+    }
+  },
+  "admin/services/nlbw-history-custom/history": {
+    "action": {
+      "type": "alias",
+      "path": "admin/services/device-traffic/history"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-device-traffic"
+      ]
+    }
+  },
+  "admin/services/nlbw-history-custom/settings": {
+    "action": {
+      "type": "alias",
+      "path": "admin/services/device-traffic/settings"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-device-traffic"
+      ]
+    }
+  },
+  "admin/services/traffic-monitor": {
+    "action": {
+      "type": "alias",
+      "path": "admin/services/device-traffic"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-device-traffic"
+      ]
+    }
+  },
+  "admin/services/traffic-monitor/live": {
+    "action": {
+      "type": "alias",
+      "path": "admin/services/device-traffic/live"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-device-traffic"
+      ]
+    }
+  },
+  "admin/services/traffic-monitor/history": {
+    "action": {
+      "type": "alias",
+      "path": "admin/services/device-traffic/history"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-device-traffic"
+      ]
+    }
+  },
+  "admin/services/traffic-monitor/settings": {
+    "action": {
+      "type": "alias",
+      "path": "admin/services/device-traffic/settings"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-device-traffic"
+      ]
+    }
+  }
+}

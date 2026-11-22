@@ -1,4 +1,12 @@
-*.ipk
-*.apk
-*.tar.gz
-__pycache__/
+/*.apk
+/dist/
+/build/
+node_modules/
+*.log
+.DS_Store
+
+# Runtime data, private backups and deployment credentials are never source.
+*.tsv
+*.pem
+*.key
+.env
