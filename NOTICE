@@ -1,0 +1,18 @@
+Device Traffic
+
+Derived from luci-app-nlbw-history by EliotFerragni and its contributors:
+https://github.com/EliotFerragni/luci-app-nlbw-history
+Source baseline: 01667b1a03f98400a7fa35decdc3ceddb5b59abd (1.1.0).
+
+The original Apache License, Version 2.0 is retained in LICENSE.
+
+The initial downstream release was named Traffic Monitor. The project and
+package were renamed to Device Traffic in version 1.0.1; runtime identifiers
+are retained for compatibility.
+
+The downstream package files have been modified for Device Traffic. Changes
+include package/service/RPC/configuration namespaces, Live-first navigation,
+device/IP tables, sorting, one-second live defaults, chart presentation,
+24-hour usage, loading performance, and local-custom migration support.
+
+nlbwmon remains a separate dependency, under its own upstream license.

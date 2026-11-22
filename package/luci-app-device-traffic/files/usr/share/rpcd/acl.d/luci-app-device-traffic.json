@@ -1,0 +1,30 @@
+{
+  "luci-app-device-traffic": {
+    "description": "Read historical per-device bandwidth data and manage its settings Modified for Device Traffic from luci-app-nlbw-history; see NOTICE.",
+    "read": {
+      "ubus": {
+        "luci_traffic_monitor": [
+          "series",
+          "status",
+          "live"
+        ],
+        "luci-rpc": [
+          "getHostHints"
+        ]
+      },
+      "uci": [
+        "traffic-monitor"
+      ]
+    },
+    "write": {
+      "ubus": {
+        "luci_traffic_monitor": [
+          "scrub"
+        ]
+      },
+      "uci": [
+        "traffic-monitor"
+      ]
+    }
+  }
+}

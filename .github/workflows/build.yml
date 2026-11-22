@@ -1,99 +1,34 @@
-name: build
+name: Build APK
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
-  release:
-    types: [published]
 
 permissions:
   contents: read
 
 jobs:
-  check:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - name: Shell syntax
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Check source and behavior
         run: |
-          for f in install.sh build-ipk.sh build-apk.sh tools/pkg-meta.sh \
-                   package/luci-app-nlbw-history/files/usr/bin/* \
-                   package/luci-app-nlbw-history/files/etc/init.d/*; do
-            sh -n "$f" || exit 1
+          node tools/check-source.cjs
+          node tools/test.cjs
+          for file in package/luci-app-device-traffic/files/usr/bin/* package/luci-app-device-traffic/files/etc/init.d/*; do
+            sh -n "$file"
           done
-      - name: JavaScript syntax
-        run: |
-          for f in package/luci-app-nlbw-history/files/www/luci-static/resources/view/nlbw-history/*.js; do
-            node --check "$f" || exit 1
-          done
-      - name: rpc signatures
-        run: |
-          python3 - <<'EOF'
-          import re, pathlib, sys
-          uc = pathlib.Path("package/luci-app-nlbw-history/files/usr/share/rpcd/ucode/luci.nlbw_history.uc").read_text()
-          backend = {}
-          for m in re.finditer(r'(\w+):\s*\{\s*args:\s*\{([^}]*)\}', uc):
-              backend[m.group(1)] = [k.strip() for k in re.findall(r'(\w+)\s*:', m.group(2))]
-          bad = 0
-          views = pathlib.Path("package/luci-app-nlbw-history/files/www/luci-static/resources/view/nlbw-history")
-          for f in sorted(views.glob("*.js")):
-              for m in re.finditer(r"rpc\.declare\(\{(.*?)\}\)", f.read_text(), re.S):
-                  blk = m.group(1)
-                  meth = re.search(r"method:\s*'(\w+)'", blk)
-                  prm = re.search(r"params:\s*\[([^\]]*)\]", blk)
-                  if not meth:
-                      continue
-                  declared = [x.strip().strip("'") for x in prm.group(1).split(',') if x.strip()] if prm else []
-                  expect = backend.get(meth.group(1))
-                  if expect is None:
-                      print("%s: no such ubus method %s" % (f.name, meth.group(1))); bad += 1
-                  elif declared != expect:
-                      print("%s: %s declares %s, backend takes %s" % (f.name, meth.group(1), declared, expect)); bad += 1
-          sys.exit(1 if bad else 0)
-          EOF
-
-      - name: JSON syntax
-        run: |
-          for f in package/luci-app-nlbw-history/files/usr/share/rpcd/acl.d/*.json \
-                   package/luci-app-nlbw-history/files/usr/share/luci/menu.d/*.json; do
-            python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" || exit 1
-          done
-
-  package:
-    needs: check
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build ipk
-        run: ./build-ipk.sh
-      - name: Build apk
-        run: ./build-apk.sh
-      - uses: actions/upload-artifact@v4
+      - name: Build unsigned OpenWrt APK
+        run: sh build-apk.sh
+      - name: Create checksums
+        run: sha256sum luci-app-device-traffic-*.apk > SHA256SUMS
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
-          name: packages
+          name: luci-app-device-traffic-apk
           path: |
-            *.ipk
-            *.apk
-          retention-days: 3
-      - name: Attach to release
-        if: github.event_name == 'release'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$TAG" *.ipk *.apk --clobber
-
-      - name: Refresh the package feed
-        if: github.event_name == 'release'
-        env:
-          GH_TOKEN: ${{ secrets.FEED_DISPATCH_TOKEN }}
-        run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::warning::FEED_DISPATCH_TOKEN is not set, so the feed still serves the previous release. Run the publish workflow in openwrt-feed by hand."
-            exit 0
-          fi
-          gh workflow run publish.yml --repo EliotFerragni/openwrt-feed
-          echo "::notice::Asked openwrt-feed to rebuild."
+            luci-app-device-traffic-*.apk
+            SHA256SUMS
+          if-no-files-found: error
