@@ -1,0 +1,98 @@
+{
+  "admin/services/traffic-monitor": {
+    "title": "Traffic Monitor",
+    "order": 71,
+    "action": {
+      "type": "firstchild"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-traffic-monitor"
+      ]
+    },
+    "description": "Modified for Traffic Monitor from luci-app-nlbw-history; see NOTICE."
+  },
+  "admin/services/traffic-monitor/live": {
+    "title": "Live",
+    "order": 1,
+    "action": {
+      "type": "view",
+      "path": "traffic-monitor/live"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-traffic-monitor"
+      ]
+    }
+  },
+  "admin/services/traffic-monitor/history": {
+    "title": "History",
+    "order": 2,
+    "action": {
+      "type": "view",
+      "path": "traffic-monitor/history"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-traffic-monitor"
+      ]
+    }
+  },
+  "admin/services/traffic-monitor/settings": {
+    "title": "Settings",
+    "order": 3,
+    "action": {
+      "type": "view",
+      "path": "traffic-monitor/settings"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-traffic-monitor"
+      ]
+    }
+  },
+  "admin/services/nlbw-history-custom": {
+    "action": {
+      "type": "alias",
+      "path": "admin/services/traffic-monitor"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-traffic-monitor"
+      ]
+    }
+  },
+  "admin/services/nlbw-history-custom/live": {
+    "action": {
+      "type": "alias",
+      "path": "admin/services/traffic-monitor/live"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-traffic-monitor"
+      ]
+    }
+  },
+  "admin/services/nlbw-history-custom/history": {
+    "action": {
+      "type": "alias",
+      "path": "admin/services/traffic-monitor/history"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-traffic-monitor"
+      ]
+    }
+  },
+  "admin/services/nlbw-history-custom/settings": {
+    "action": {
+      "type": "alias",
+      "path": "admin/services/traffic-monitor/settings"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-traffic-monitor"
+      ]
+    }
+  }
+}

@@ -1,0 +1,298 @@
+#!/bin/sh
+# Modified for Traffic Monitor from luci-app-nlbw-history; see NOTICE.
+# Aggregate the stored samples into a bucketed time series and print JSON.
+#
+#   traffic-monitor-query <hours> [buckets] [mac] [protocol] [end] [hide]
+#
+# The window is the <hours> before <end>, an epoch that defaults to now, so a
+# past month can be asked for without widening the window. Reads the
+# persistent day files plus the not yet flushed RAM spools, so the most recent
+# samples always show up. What gets stacked depends on the filters:
+#
+#   no filters            per device, at full sampling resolution
+#   a device selected     per protocol for that device
+#   a protocol selected   per device for that protocol
+#
+# <hide> is a comma separated list of keys to leave out of the stack, MACs or
+# protocol names depending on which is being stacked. They are dropped before
+# the top N is picked, so hiding the device that dwarfs the rest also lets a
+# further one up out of "other", and they stay in the totals tables, which
+# report what was recorded rather than what is drawn.
+#
+# Output:
+# { "from":…, "to":…, "step":…, "buckets":…, "last_sample":…,
+#   "mode":"devices"|"protocols", "coarse":true|false,
+#   "discarded":{"count":…,"first":…,"last":…,"devices":…},
+#   "devices":[ {"mac":…,"name":…,"rx":…,"tx":…,"charted":…,"hidden":…} ],
+#   "protocols":[ {"name":…,"rx":…,"tx":…,"charted":…,"hidden":…} ],
+#   "series": { "<key|other>": {"rx":[…],"tx":[…]} } }
+
+. /lib/functions.sh
+
+config_load traffic-monitor
+config_get DATA_DIR main data_dir /srv/traffic-monitor
+config_get PERIOD main period 60
+config_get PROTO_INTERVAL main protocol_interval 900
+case "$PERIOD" in ''|*[!0-9]*) PERIOD=60 ;; esac
+case "$PROTO_INTERVAL" in ''|*[!0-9]*) PROTO_INTERVAL=900 ;; esac
+[ "$PERIOD" -lt 1 ] && PERIOD=1
+[ "$PROTO_INTERVAL" -lt 60 ] && PROTO_INTERVAL=60
+
+RUN=/tmp/traffic-monitor
+TOP=8
+
+HOURS=${1:-24}
+BUCKETS=${2:-160}
+MAC=$(echo "${3:-}" | tr 'A-Z' 'a-z')
+PROTO=${4:-}
+END=${5:-0}
+# Only ever handed to awk through -v, never to the shell, but keep it to the
+# characters a MAC or a protocol name can contain all the same.
+HIDE=$(printf '%s' "${6:-}" | sed 's/[^0-9A-Za-z._:,+ -]//g')
+
+case "$HOURS" in ''|*[!0-9]*) HOURS=24 ;; esac
+case "$BUCKETS" in ''|*[!0-9]*) BUCKETS=160 ;; esac
+case "$END" in ''|*[!0-9]*) END=0 ;; esac
+[ "$HOURS" -lt 1 ] && HOURS=1
+# 768 hours is 32 days, enough for a whole calendar month in one window.
+[ "$HOURS" -gt 768 ] && HOURS=768
+[ "$BUCKETS" -lt 10 ] && BUCKETS=10
+[ "$BUCKETS" -gt 400 ] && BUCKETS=400
+case "$MAC" in
+	'' ) ;;
+	[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]) ;;
+	* ) MAC='' ;;
+esac
+
+NOW=$(date +%s)
+TO=$END
+[ "$TO" -le 0 ] && TO=$NOW
+SPAN=$((HOURS * 3600))
+
+# Samples sit on a grid: device rows every period seconds, protocol rows every
+# protocol_interval. A bucket narrower than that grid is empty most of the
+# time, and one that is not a whole number of grid steps wide holds a different
+# number of samples than its neighbour. Both read as ragged bars, so the
+# requested bucket count is only an upper bound: the step is rounded up to the
+# grid and the count follows from it.
+GRAIN=$PERIOD
+if [ -n "$MAC" ] || [ -n "$PROTO" ]; then
+	GRAIN=$PROTO_INTERVAL
+fi
+STEP=$(( (SPAN + BUCKETS - 1) / BUCKETS ))
+STEP=$(( (STEP + GRAIN - 1) / GRAIN * GRAIN ))
+BUCKETS=$((SPAN / STEP))
+[ "$BUCKETS" -lt 1 ] && BUCKETS=1
+FROM=$((TO - BUCKETS * STEP))
+LAST=$(cat "$RUN/lastsample" 2>/dev/null)
+case "$LAST" in ''|*[!0-9]*) LAST=0 ;; esac
+
+day_of() { date -D %s -d "$1" +%Y-%m-%d 2>/dev/null || date -d "@$1" +%Y-%m-%d; }
+
+# Only the day files that can hold samples in the window. Device rows have 4
+# fields, protocol rows 5 and rejected samples 6, so all three sets can be read
+# in a single pass.
+FILES=""
+d=$FROM
+while [ "$d" -le $((TO + 86400)) ]; do
+	day=$(day_of "$d")
+	for f in "$DATA_DIR/$day.tsv" "$DATA_DIR/$day.proto.tsv" "$DATA_DIR/$day.suspect.tsv"; do
+		[ -f "$f" ] && FILES="$FILES $f"
+	done
+	d=$((d + 86400))
+done
+[ -f "$RUN/spool" ] && FILES="$FILES $RUN/spool"
+[ -f "$RUN/spool.proto" ] && FILES="$FILES $RUN/spool.proto"
+[ -f "$RUN/spool.suspect" ] && FILES="$FILES $RUN/spool.suspect"
+
+# Share the collector lock: a flush appends to disk before clearing the spool.
+mkdir -p "$RUN" || exit 1
+LOCK="$RUN/lock"
+_tries=0
+while ! mkdir "$LOCK" 2>/dev/null; do
+  _tries=$((_tries + 1))
+  if [ "$_tries" -ge 5 ]; then echo '{"error":"History is busy. Please retry."}'; exit 0; fi
+  sleep 1
+done
+trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM
+# Rebuild the file list under the lock, including a day file just created.
+FILES=""
+d=$FROM
+while [ "$d" -le $((TO + 86400)) ]; do
+  day=$(day_of "$d")
+  for f in "$DATA_DIR/$day.tsv" "$DATA_DIR/$day.proto.tsv" "$DATA_DIR/$day.suspect.tsv"; do
+    [ -f "$f" ] && FILES="$FILES $f"
+  done
+  d=$((d + 86400))
+done
+for f in "$RUN/spool" "$RUN/spool.proto" "$RUN/spool.suspect"; do [ -f "$f" ] && FILES="$FILES $f"; done
+# Names: DHCP leases win over static host entries, both optional.
+NAMES="$RUN/names.$$"
+{
+	uci -q show dhcp 2>/dev/null | tr -d "\047" | awk '
+		{
+			e = index($0, "="); if (!e) next
+			v = substr($0, e + 1); k = substr($0, 1, e - 1)
+			p = split(k, kp, "."); if (p < 3) next
+			s = kp[2]; f = kp[p]
+			if (f == "mac") m[s] = v; else if (f == "name") n[s] = v
+		}
+		END { for (s in m) if (n[s] != "") print tolower(m[s]) "\t" n[s] }'
+	[ -f /tmp/dhcp.leases ] && awk '$4 != "*" && $4 != "" { print tolower($2) "\t" $4 }' /tmp/dhcp.leases
+} > "$NAMES" 2>/dev/null
+
+awk -F'\t' -v from="$FROM" -v to="$TO" -v nb="$BUCKETS" -v step="$STEP" -v top="$TOP" \
+    -v onlymac="$MAC" -v onlyproto="$PROTO" -v last="$LAST" -v namefile="$NAMES" \
+    -v hidden="$HIDE" '
+# Arrays, all keyed by MAC or protocol name:
+#   RX/TX[key, bucket]  the stacked series, the only thing the chart draws
+#   tot/seen[key]       totals and presence for the stacked dimension
+#   drx/dtx/dtot/seendev[mac]     per device, for the table
+#   prx/ptx/ptot/seenproto[name]  per protocol, for the table
+BEGIN {
+	while ((getline l < namefile) > 0) {
+		split(l, a, "\t")
+		if (a[1] != "" && a[2] != "") name[a[1]] = a[2]
+	}
+	close(namefile)
+	# devices when nothing is selected or a protocol is, protocols when a
+	# single device is selected
+	bykey = (onlymac != "" && onlyproto == "") ? "proto" : "mac"
+	coarse = (onlyproto != "" || onlymac != "")
+	nh = split(hidden, hv, ",")
+	for (i = 1; i <= nh; i++) {
+		if (hv[i] == "") continue
+		hide[hv[i]] = 1
+		# MACs are matched lowercased; protocol names are not, so only fold
+		# the entries that can be a MAC in the first place.
+		if (hv[i] ~ /^[0-9A-Fa-f:]+$/) hide[tolower(hv[i])] = 1
+	}
+}
+/^#/ { next }
+{
+	ts = $1 + 0
+	if (ts < from || ts > to) next
+	b = int((ts - from) / step)
+	if (b < 0) b = 0
+	if (b >= nb) b = nb - 1
+}
+NF == 4 {
+	mac = tolower($2)
+	# device totals come from the finer stream unless a protocol is selected
+	if (!coarse || onlyproto == "") {
+		dtot[mac] += $3 + $4; drx[mac] += $3; dtx[mac] += $4
+		seendev[mac] = 1
+	}
+	if (!coarse && !(mac in hide)) {
+		RX[mac, b] += $3; TX[mac, b] += $4
+		tot[mac] += $3 + $4; seen[mac] = 1
+	}
+	next
+}
+NF == 5 {
+	mac = tolower($2); p = $3
+	if (onlymac == "" || mac == onlymac) {
+		ptot[p] += $4 + $5; prx[p] += $4; ptx[p] += $5; seenproto[p] = 1
+	}
+	if (onlyproto != "") {
+		if (p != onlyproto) next
+		dtot[mac] += $4 + $5; drx[mac] += $4; dtx[mac] += $5; seendev[mac] = 1
+	}
+	if (!coarse) next
+	if (onlymac != "" && mac != onlymac) next
+	if (onlyproto != "" && p != onlyproto) next
+	k = (bykey == "proto") ? p : mac
+	if (k in hide) next
+	RX[k, b] += $4; TX[k, b] += $5
+	tot[k] += $4 + $5; seen[k] = 1
+}
+# Samples the collector refused to believe, because a counter moved further
+# than max_rate allows. They carry no usable number, so they are counted rather
+# than charted: the point is that the gap is visible instead of silent.
+NF == 6 {
+	nbad++
+	if (badfirst == 0 || ts < badfirst) badfirst = ts
+	if (ts > badlast) badlast = ts
+	badmac[tolower($2)] = 1
+	next
+}
+function jstr(s,   i, c, out) {
+	out = ""
+	for (i = 1; i <= length(s); i++) {
+		c = substr(s, i, 1)
+		if (c == "\"" || c == "\\") out = out "\\" c
+		else if (c ~ /[[:cntrl:]]/) out = out " "
+		else out = out c
+	}
+	return out
+}
+function sortkeys(arr, ord, weight,   i, j, k, n) {
+	n = 0
+	for (i in arr) { n++; ord[n] = i }
+	for (i = 2; i <= n; i++) {
+		k = ord[i]
+		for (j = i - 1; j >= 1 && weight[ord[j]] < weight[k]; j--) ord[j + 1] = ord[j]
+		ord[j + 1] = k
+	}
+	return n
+}
+function emit(k, key,   b) {
+	printf "%s\"%s\":{\"rx\":[", sep0, jstr(key)
+	for (b = 0; b < nb; b++) printf "%s%.0f", (b ? "," : ""), RX[k, b]
+	printf "],\"tx\":["
+	for (b = 0; b < nb; b++) printf "%s%.0f", (b ? "," : ""), TX[k, b]
+	printf "]}"
+	sep0 = ","
+}
+END {
+	n = sortkeys(seen, ord, tot)
+	nshow = (n > top) ? top : n
+	# everything past the top N is summed into one band; \002 keeps that key
+	# from colliding with a device or protocol that happens to be called other
+	for (i = nshow + 1; i <= n; i++)
+		for (b = 0; b < nb; b++) {
+			RX["\002other", b] += RX[ord[i], b]
+			TX["\002other", b] += TX[ord[i], b]
+		}
+	for (i = 1; i <= nshow; i++) charted[ord[i]] = 1
+
+	printf "{\"from\":%d,\"to\":%d,\"step\":%d,\"buckets\":%d,\"last_sample\":%d,", \
+		from, to, step, nb, last
+	printf "\"mode\":\"%s\",\"coarse\":%s,", \
+		(bykey == "proto" ? "protocols" : "devices"), (coarse ? "true" : "false")
+
+	nbaddev = 0
+	for (m in badmac) nbaddev++
+	printf "\"discarded\":{\"count\":%d,\"first\":%d,\"last\":%d,\"devices\":%d},", \
+		nbad + 0, badfirst + 0, badlast + 0, nbaddev
+
+	printf "\"devices\":["
+	nd = sortkeys(seendev, dord, dtot)
+	for (i = 1; i <= nd; i++) {
+		m = dord[i]
+		printf "%s{\"mac\":\"%s\",\"name\":\"%s\",\"rx\":%.0f,\"tx\":%.0f,\"charted\":%s,\"hidden\":%s}", \
+			(i > 1 ? "," : ""), jstr(m), jstr((m in name) ? name[m] : m), drx[m], dtx[m], \
+			((bykey == "mac" && (m in charted)) ? "true" : "false"), \
+			((bykey == "mac" && (m in hide)) ? "true" : "false")
+	}
+
+	printf "],\"protocols\":["
+	np = sortkeys(seenproto, pord, ptot)
+	for (i = 1; i <= np; i++) {
+		p = pord[i]
+		printf "%s{\"name\":\"%s\",\"rx\":%.0f,\"tx\":%.0f,\"charted\":%s,\"hidden\":%s}", \
+			(i > 1 ? "," : ""), jstr(p), prx[p], ptx[p], \
+			((bykey == "proto" && (p in charted)) ? "true" : "false"), \
+			((bykey == "proto" && (p in hide)) ? "true" : "false")
+	}
+
+	printf "],\"series\":{"
+	sep0 = ""
+	for (i = 1; i <= nshow; i++) emit(ord[i], ord[i])
+	if (n > nshow) emit("\002other", "other")
+	printf "}}\n"
+}
+' $FILES /dev/null
+
+rm -f "$NAMES"
+exit 0

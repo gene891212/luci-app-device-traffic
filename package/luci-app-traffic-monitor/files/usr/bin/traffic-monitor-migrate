@@ -1,0 +1,120 @@
+#!/bin/sh
+# Modified for Traffic Monitor from luci-app-nlbw-history; see NOTICE.
+# One-time migration from the local luci-app-nlbw-history-custom package.
+# A dry run is the default. History and backups are never deleted here.
+set -eu
+
+OLD=nlbw-history-custom
+NEW=traffic-monitor
+OLD_RUN=/tmp/$OLD
+NEW_RUN=/tmp/$NEW
+MARKER=/etc/traffic-monitor.migration
+
+case "${1:-}" in
+    ''|--dry-run) APPLY=0 ;;
+    --apply) APPLY=1 ;;
+    *) echo "Usage: traffic-monitor-migrate [--dry-run|--apply]" >&2; exit 2 ;;
+esac
+
+if [ -f "$MARKER" ]; then
+    echo "Migration already completed. See $MARKER for the private backup path."
+    exit 0
+fi
+[ -f /etc/config/$OLD ] || { echo 'No local-custom configuration to migrate.'; exit 0; }
+[ -x /etc/init.d/$OLD ] || { echo 'The old package must remain installed until migration completes.' >&2; exit 1; }
+OLD_DATA=$(uci -q get "$OLD.main.data_dir")
+[ -n "$OLD_DATA" ] && [ -d "$OLD_DATA" ] || { echo 'Old history directory is unavailable.' >&2; exit 1; }
+case "$OLD_DATA" in
+    /srv/nlbw-history-custom) NEW_DATA=/srv/traffic-monitor ;;
+    *) NEW_DATA=$OLD_DATA ;;
+esac
+printf 'Configuration: /etc/config/%s -> /etc/config/%s\nHistory: %s -> %s\n' "$OLD" "$NEW" "$OLD_DATA" "$NEW_DATA"
+[ "$APPLY" = 1 ] || { echo 'Dry run only. Run with --apply after installing the new package without scripts.'; exit 0; }
+[ -x /etc/init.d/$NEW ] || { echo 'Install luci-app-traffic-monitor first.' >&2; exit 1; }
+if /etc/init.d/$NEW running >/dev/null 2>&1; then echo 'The new sampler is already running; stop it before migrating.' >&2; exit 1; fi
+[ -z "$(uci changes "$OLD")" ] && [ -z "$(uci changes "$NEW")" ] || { echo 'Resolve pending UCI changes before migration.' >&2; exit 1; }
+if [ "$NEW_DATA" != "$OLD_DATA" ] && [ -d "$NEW_DATA" ] && [ -n "$(ls -A "$NEW_DATA")" ]; then
+    echo 'The new history directory is not empty; nothing was overwritten.' >&2; exit 1
+fi
+if [ -d "$NEW_RUN" ] && [ -n "$(ls -A "$NEW_RUN")" ]; then
+    echo 'The new runtime directory is not empty; nothing was overwritten.' >&2; exit 1
+fi
+
+LOCK=/tmp/traffic-monitor-migrate.lock
+mkdir "$LOCK" 2>/dev/null || { echo 'Another migration is running.' >&2; exit 1; }
+BACKUP=/root/traffic-monitor-migration-$(date +%Y%m%d-%H%M%S)
+mkdir -m 700 "$BACKUP"
+OLD_ENABLED=0; /etc/init.d/$OLD enabled >/dev/null 2>&1 && OLD_ENABLED=1
+STOPPED=0; DONE=0
+cleanup() {
+    rc=$?
+    if [ "$DONE" = 0 ] && [ "$STOPPED" = 1 ]; then
+        /etc/init.d/$NEW stop >/dev/null 2>&1 || true
+        /etc/init.d/$NEW disable >/dev/null 2>&1 || true
+        # A custom shared data path also needs the latest counter baseline.
+        if [ "$OLD_DATA" = "$NEW_DATA" ]; then
+            for f in state state.proto lastsample lastflush spool spool.proto spool.suspect; do
+                [ ! -f "$NEW_RUN/$f" ] || cp -p "$NEW_RUN/$f" "$OLD_RUN/$f"
+            done
+        fi
+        [ "$OLD_ENABLED" = 0 ] || /etc/init.d/$OLD enable >/dev/null 2>&1 || true
+        /etc/init.d/$OLD start >/dev/null 2>&1 || true
+        echo "Migration did not finish; the old sampler was restarted. Backup: $BACKUP" >&2
+    fi
+    rmdir "$LOCK" 2>/dev/null || true
+    exit "$rc"
+}
+trap cleanup EXIT
+trap 'exit 1' INT TERM
+cp -p /etc/config/$OLD "$BACKUP/config-old"
+cp -p /etc/config/$NEW "$BACKUP/config-new-before"
+printf '%s\n' "$OLD_ENABLED" > "$BACKUP/old-enabled"
+printf '%s\n' "$OLD_DATA" > "$BACKUP/old-data-dir"
+printf '%s\n' "$NEW_DATA" > "$BACKUP/new-data-dir"
+if [ -f /lib/apk/packages/luci-app-nlbw-history-custom.list ]; then
+    sed 's|^/||' /lib/apk/packages/luci-app-nlbw-history-custom.list > "$BACKUP/installed-file-list"
+    tar -czf "$BACKUP/old-installed-files.tar.gz" -C / -T "$BACKUP/installed-file-list"
+fi
+
+STOPPED=1
+/etc/init.d/$OLD disable
+/etc/init.d/$OLD stop
+for attempt in 1 2 3 4 5; do
+    [ ! -d "$OLD_RUN/lock" ] && break
+    sleep 1
+done
+[ ! -d "$OLD_RUN/lock" ] || { echo 'Old sampler/query lock remains busy.' >&2; exit 1; }
+/usr/bin/$OLD-collect --flush
+[ ! -s "$OLD_RUN/spool" ] && [ ! -s "$OLD_RUN/spool.proto" ] && [ ! -s "$OLD_RUN/spool.suspect" ] || { echo 'Old samples could not be flushed.' >&2; exit 1; }
+if [ -s "$OLD_RUN/live.pid" ]; then
+    pid=$(cat "$OLD_RUN/live.pid")
+    case "$pid" in
+        ''|*[!0-9]*) ;;
+        *) if [ -r "/proc/$pid/cmdline" ]; then
+            cmd=$(tr '\000' ' ' < "/proc/$pid/cmdline")
+            case "$cmd" in *"/usr/bin/$OLD-live --daemon"*) kill "$pid" 2>/dev/null || true ;; esac
+        fi ;;
+    esac
+fi
+tar -czf "$BACKUP/history.tar.gz" -C "$OLD_DATA" .
+tar -czf "$BACKUP/runtime.tar.gz" -C "$OLD_RUN" .
+(cd "$OLD_DATA" && find . -type f -exec sha256sum '{}' \; | sort) > "$BACKUP/history.sha256"
+if [ "$NEW_DATA" != "$OLD_DATA" ]; then mkdir -p "$NEW_DATA"; cp -a "$OLD_DATA/." "$NEW_DATA/"; fi
+(cd "$NEW_DATA" && sha256sum -c "$BACKUP/history.sha256")
+mkdir -p "$NEW_RUN"
+for f in state state.proto lastsample lastflush spool spool.proto spool.suspect live.ring live.subnets live.subnets.stamp; do
+    [ ! -f "$OLD_RUN/$f" ] || cp -p "$OLD_RUN/$f" "$NEW_RUN/$f"
+done
+sed -e 's/nlbw_history_custom/traffic_monitor/g' "$BACKUP/config-old" > "$BACKUP/config-new"
+if [ "$OLD_DATA" != "$NEW_DATA" ]; then
+    sed 's|/srv/nlbw-history-custom|/srv/traffic-monitor|g' "$BACKUP/config-new" > "$BACKUP/config-new.tmp"
+    mv "$BACKUP/config-new.tmp" "$BACKUP/config-new"
+fi
+cp -p "$BACKUP/config-new" /etc/config/$NEW
+[ "$(uci -q get "$NEW.main.data_dir")" = "$NEW_DATA" ] || { echo 'Migrated data path did not match.' >&2; exit 1; }
+/etc/init.d/$NEW enable
+/etc/init.d/$NEW start
+/etc/init.d/$NEW running
+printf 'backup=%s\nold_data=%s\nnew_data=%s\n' "$BACKUP" "$OLD_DATA" "$NEW_DATA" > "$MARKER"
+DONE=1
+printf 'Migration completed. Backup: %s\nThe old package can now be removed without scripts; keep nlbwmon installed.\n' "$BACKUP"

@@ -1,0 +1,30 @@
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict');
+const root=path.resolve(__dirname,'..'),files=path.join(root,'package/luci-app-traffic-monitor/files'),resource=path.join(files,'www/luci-static/resources');
+const memory=new Map(),window={localStorage:{getItem:k=>memory.get(k)??null,setItem:(k,v)=>memory.set(k,String(v))}};
+function load(file,extra={}){return vm.runInNewContext('(function(){'+fs.readFileSync(path.join(resource,file),'utf8')+'})()',{baseclass:{extend:x=>x},window,_:s=>s,...extra});}
+const chart=load('traffic-monitor/chart.js'),table=load('traffic-monitor/table.js'),usage=load('traffic-monitor/usage.js');
+memory.set('nlbw-history-custom.live-rate-unit-v24','byte');assert.equal(chart.stored('traffic-monitor.live-rate-unit'),'byte');assert.equal(memory.get('traffic-monitor.live-rate-unit'),'byte');
+memory.set('nlbw-history-custom.live-hidden','{"devices":["02:00:00:00:00:01"],"protocols":[]}');assert(chart.stored('traffic-monitor.live-hidden').includes('02:00:00:00:00:01'));
+memory.set('nlbw-history-custom.history.table-sort','{"key":"rx","direction":"ascending"}');assert.equal(table.loadSort('history').key,'rx');
+const data={last_sample:100,devices:[{mac:'02:00:00:00:00:01',rx:1000,tx:500}],protocols:[{name:'HTTPS',rx:800,tx:100}]};
+assert.equal(usage.total({data},{mac:'02:00:00:00:00:01',rx:1,tx:1},false),1500);
+assert.equal(usage.total({data},{name:'HTTPS'},true),900);
+assert.equal(usage.total({data},{name:'udp:12345'},true),null);
+assert.equal(usage.total({data},{mac:'02:00:00:00:00:02'},false),0);
+assert.equal(usage.total({data,error:'busy'},{mac:'02:00:00:00:00:01'},false),null);
+const rows=[{mac:'a',rx:9999,rx_now:1,usage:2},{mac:'b',rx:1,rx_now:9,usage:100},{mac:'c',usage:null}];
+assert.deepEqual(Array.from(table.sortRows(rows,{key:'total',direction:'descending'},{live:true,total:r=>r.usage}),r=>r.mac),['b','a','c']);
+assert.equal(table.sortRows(rows,{key:'rx',direction:'descending'},{live:true})[0].mac,'b');
+assert.equal(table.sortRows(rows,{key:'rx',direction:'descending'})[0].mac,'a');
+const declarations=[],calls=[];
+const rpc={declare:o=>{declarations.push(o);return (...args)=>{calls.push(o.method);return Promise.resolve(o.object==='uci'?{main:{live_interval:'1',chart_type:'area',time_format:'24'}}:o.method==='getHostHints'?{}:{times:[],devices:[],protocols:[]});};}};
+const liveSource=fs.readFileSync(path.join(resource,'view/traffic-monitor/live.js'),'utf8');
+const live=load('view/traffic-monitor/live.js',{view:{extend:x=>x},rpc,chart,trafficTable:table,usage,URLSearchParams,location:{search:''}});
+const axisCode=liveSource.slice(liveSource.indexOf('function rateAxisUnit'),liveSource.indexOf('let hidden ='));
+function axis(unit,mode){return new Function('RATEUNIT','chart',axisCode+'return {rateAxisUnit,fmtAxisRate};')(unit,{units:mode});}
+assert.equal(axis('byte','si').fmtAxisRate(1e6),'1');assert.equal(axis('bit','si').fmtAxisRate(1e6),'8');assert.equal(axis('byte','iec').fmtAxisRate(1048576),'1');assert.equal(axis('byte','si').fmtAxisRate(125),'0.000125');
+chart.chartType='area';
+const options={width:600,height:300,n:3,keys:['a'],labels:['A'],colors:['#123456'],value:()=>125000,fmtY:v=>String(v/1e6),xLabel:i=>'12:00',title:'Download (MB/s)'};
+assert(chart.svg({...options,compactAxis:true}).includes('x1="40"'));
+assert(chart.svg(options).includes('x1="74"'));
+(async()=>{await live.load();assert.deepEqual(calls.sort(),['get','getHostHints','live']);assert(declarations.every(x=>x.nobatch));console.log('Behavior checks passed: preference migration, 24h usage, sorting, units, axis layout and nonblocking startup.');})().catch(e=>{console.error(e);process.exitCode=1;});

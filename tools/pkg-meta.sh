@@ -1,4 +1,5 @@
 #!/bin/sh
+# Modified for Traffic Monitor from luci-app-nlbw-history; see NOTICE.
 # Sourced by build-ipk.sh and build-apk.sh. Everything either of them needs to
 # know about the package is read back out of the package Makefile rather than
 # written down a second time, because a second copy is how the two silently
@@ -8,7 +9,7 @@
 # Sourced, not run. $0 is still the build script, so PKG_ROOT resolves relative
 # to it and both builders can live at the top of the tree.
 
-PKG=luci-app-nlbw-history
+PKG=luci-app-traffic-monitor
 # The top of the tree. $0 is the build script when this is sourced by one;
 # anything else that sources it from elsewhere sets this instead.
 PKG_ROOT=${PKG_ROOT:-$(cd "$(dirname "$0")" && pwd)}

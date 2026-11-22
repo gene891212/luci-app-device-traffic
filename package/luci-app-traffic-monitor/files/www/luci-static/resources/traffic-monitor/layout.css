@@ -1,0 +1,47 @@
+/* Modified for Traffic Monitor from luci-app-nlbw-history; see NOTICE. */
+
+.nbh-layout,.nbh-layout .cbi-section,.nbh-charts{min-width:0;max-width:100%}
+.nbh-chart-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:20px}
+.nbh-chart-panel{min-width:0}
+.nbh-chart-panel svg{width:100%;height:300px;display:block}
+.nbh-table-wrap{max-width:100%;overflow-x:auto;overscroll-behavior-x:contain}
+table.nbh-device-table{display:table!important;width:100%;min-width:900px;table-layout:auto;border-collapse:collapse}
+.nbh-device-table .thead{display:table-header-group!important}
+.nbh-device-table .tbody{display:table-row-group!important}
+.nbh-device-table .tr{display:table-row!important}
+.nbh-device-table .tr>.th,.nbh-device-table .tr>.td{display:table-cell!important;vertical-align:middle;text-align:left;box-sizing:border-box;padding:1.1em 1.25rem}
+.nbh-device-table .tr>.th:before,.nbh-device-table .tr>.td:before{content:none!important}
+.nbh-device-table .nbh-name{overflow-wrap:anywhere;white-space:normal}
+.nbh-device-table .nbh-name a{white-space:normal;overflow-wrap:anywhere}
+.nbh-device-table .nbh-mac{white-space:nowrap;text-align:right!important}
+.nbh-device-table .nbh-ip{white-space:nowrap}
+.nbh-device-table .nbh-number{white-space:nowrap;text-align:right!important;font-variant-numeric:tabular-nums}
+@media(max-width:1100px){.nbh-chart-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:600px){table.nbh-device-table{min-width:840px}.nbh-layout .cbi-input-select{max-width:100%}}
+
+.nbh-layout .nbh-toolbar,.nbh-layout .nbh-chart-section{padding:1rem 1.25rem!important;box-sizing:border-box}
+.nbh-controls{display:flex;flex-wrap:wrap;align-items:center;gap:1rem 1.25rem}
+.nbh-field{display:flex;align-items:center;gap:.5rem;min-width:0;max-width:100%}
+.nbh-field label{margin:0;white-space:nowrap;font:inherit}
+.nbh-field select{min-width:0!important;max-width:100%;margin:0}
+.nbh-field:first-of-type select{width:260px}
+.nbh-toolbar .cbi-section-descr{padding:0!important;margin:14px 0 0!important;line-height:1.5}
+.nbh-status,.nbh-hidden{margin-top:12px;line-height:1.5}
+.nbh-status{opacity:.75}
+.nbh-hidden:empty{display:none}
+@media(max-width:600px){.nbh-controls{gap:12px}.nbh-field{width:100%}.nbh-field label{width:64px;flex:none}.nbh-field select{flex:1;width:0!important}}
+
+.nbh-host-content{display:flex;align-items:center;gap:10px;min-width:0}
+.nbh-host-content input[type=checkbox]{flex:none;margin:0}
+.nbh-host-content a{min-width:0}
+
+.nbh-layout table.nbh-device-table .tr>.th,.nbh-layout table.nbh-device-table .tr>.td{padding:1.1em 1.25rem!important}
+
+.nbh-sortable{cursor:pointer;user-select:none}
+.nbh-layout table.nbh-device-table.nbh-live-table{table-layout:fixed;min-width:960px}
+.nbh-layout .nbh-live-table .nbh-name{width:22%}
+.nbh-layout .nbh-live-table .nbh-ip{width:16%}
+.nbh-layout .nbh-live-table .nbh-mac{width:20%}
+.nbh-layout .nbh-live-table .nbh-number{width:14%}
+.nbh-layout .nbh-live-table.nbh-live-protocols .nbh-name{width:40%}
+.nbh-layout .nbh-live-table.nbh-live-protocols .nbh-number{width:20%}
